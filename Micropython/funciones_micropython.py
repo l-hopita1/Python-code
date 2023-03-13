@@ -1,14 +1,7 @@
 """Módulo con funciones a implementar en MicroPython (uPy)."""
 import struct
-import logging
-
-class FormatTable:
-    """Clase con el formato de tabla de serialización"""
-    def __init__(self,tag,type,len):
-        self.tag = tag
-        self.type = type
-        self.len = len
-
+import bitstring
+        
 class BinaryParser:
     """"Clase para codificar/decodificar un objeto o estructura de datos en función de un formato definido:
     ObjetoDatos <- Formato -> Trama binaria
@@ -23,94 +16,92 @@ class BinaryParser:
         • tag -> Nombre del campo en el objeto para de/serializar
         • type -> Tipo de dato del campo
         • len -> Longitud en bits del campo (si aplica al tipo)} """
-        
-    def encode(src, format):
+
+    def encode1(src, format):
         """Codifica un objeto utilizando el formato ingresado.
         Devuelve una trama binaria codificada. 
         @param {*} src -> Diccionario / tabla a frasear (serializar)
         @param {*} format -> Formato de serialización (ver notas adjuntas)
         @return {*} size -> tamaño en bits de la trama. buffer -> diccionario / tabla serializado/a
-        versión: 1.0"""
+        versión: 2.0"""
         try:
-            # Inicializo las variables de salida
-            buffer = ""
-            size = 0
+            # Verifico los datos de entrada:
+            if len(src) > len(format):
+                print(f"encode1: El largo del diccionario 'src' es mayor a la tabla de formato 'format': {len(src)} < {len(format)}")
+                
+            # Crea una lista vacía para almacenar la trama binaria
+            bits = bitstring.BitArray()
             
-            # Convierto cada diccionario en un objeto FormatTable
-            ObjetoDatos = [FormatTable(**datos) for datos in format]
-            
-            # Genero el formato y el argumento para serializar la trama
-            structFormat=""
-            structArg=[]
+            # Recorre la lista format para serializar cada campo en el diccionario src
             count=0
-            for iObjetoDatos in ObjetoDatos:
-                if (iObjetoDatos.type=="uint"):
-                    structFormat+="I"
-                    structArg.append(src[iObjetoDatos.tag])
-                elif (iObjetoDatos.type=="int"):
-                    structFormat+="i"
-                    structArg.append(src[iObjetoDatos.tag])
-                elif (iObjetoDatos.type=="float"):
-                    structFormat+="f"
-                    structArg.append(src[iObjetoDatos.tag])
+            for field in format:
+                # Obtiene el valor del campo en el diccionario src
+                value = src[field['tag']]
+                
+                # Serializa el valor según el tipo de campo y el tamaño especificado en format
+                if field['type'] == 'uint':
+                    bits.append(bitstring.pack('uint:%d' % field['len'], value))
+                    if value.bit_length()>field['len']:
+                        print(f"encode1: Se recortó el valor de {field['tag']} ya que  supera el límite establecido en format. {value}({value.bit_length()} bits) > {field['len']} bits")
+                elif field['type'] == 'int':
+                    bits.append(bitstring.pack('int:%d' % field['len'], value))
+                    if value.bit_length()>field['len']:
+                        print(f"encode1: Se recortó el valor de {field['tag']} ya que  supera el límite establecido en format. {value}({value.bit_length()} bits) > {field['len']} bits")
+                elif field['type'] == 'float':
+                    bits.append(bitstring.pack('floatbe:%d' % field['len'], value))
+                elif field['type'] == 'ascii':
+                    encoded = struct.pack('%ds' % (field['len']//7), value.encode('ascii'))
+                    bits.append(bitstring.BitArray(bytes=encoded))
+                    if len(value)*7>field['len']:
+                        print(f"encode1: Se recortó el valor de {field['tag']} ya que  supera el límite establecido en format. {value}({len(value)*7} bits) > {field['len']} bits")
                 else:
-                    structFormat+=str(len(src[iObjetoDatos.tag]))+"s"
-                    structArg.append(src[iObjetoDatos.tag].encode('utf-8'))
+                    print(f"encode1: No se reconoce el tipo de objeto: {field['type']}")
                 count+=1
+                
         except KeyError:
             print(KeyError)
             print(f"Advertencia! Las filas del diccionario (src) deben igualar a las del formato (format): {len(src)}(src)~={len(format)}(format)\nSe utilizan menos filas de format.")
             ShortFormat=[row for i, row in enumerate(format) if i != count]
-            [output0,output1]=BinaryParser.encode(src, ShortFormat)
+            [output0,output1]=BinaryParser.encode1(src, ShortFormat)
             return output0,output1
         else:
-            # Calculo el tamaño de la trama.
-            size=struct.calcsize(structFormat)
-            
-            # Transformo los datos en una trama binaria.
-            buffer = struct.pack(structFormat, *structArg)
-            return size, buffer
-        #finally:
-            
+            # Agrego bits overhead para completar el paquete de bytes.
+            trama=bits.bin + '0'*(bits.len%8)
+            # Devuelve el tamaño y el valor de la trama binaria
+            return len(trama), trama
 
-
-    def decode(buffer, format):
+    def decode1(buffer, format):
         """Decodifica la trama binaria del buffer utilizando el formato ingresado.
         Devuelve la lista con los objetos decodificados. 
         @param {*} buffer -> Trama a deserializar (cadena / bytes)
         @param {*} format -> Formato de serialización (ver notas adjuntas)
         @return {*} diccionario / tabla "composición" (trama deserializada en campos tag = valor)
-        version: 1.0"""
+        version: 2.0"""
         try:
-            # Convierto cada diccionario en un objeto FormatTable
-            ObjetoDatos = [FormatTable(**datos) for datos in format]
+            # Crea un diccionario vacío para almacenar los valores deserializados
+            values = {}
             
-            # Genero el formato para deserializar la trama
-            structFormat=""
-            for iObjetoDatos in ObjetoDatos:
-                if (iObjetoDatos.type=="uint"):
-                    structFormat+="I"
-                elif (iObjetoDatos.type=="int"):
-                    structFormat+="i"
-                elif (iObjetoDatos.type=="float"):
-                    structFormat+="f"
-                else: #Es un 'ascii'
-                    structFormat+=str(int(iObjetoDatos.len/8))+"s" #informo cuantos caracteres tiene.
-                    
-            # Transformo la trama binaria en datos 
-            unpacked = struct.unpack(structFormat,buffer)
-        except struct.error:
-            print(struct.error)
+            # Convierte la trama binaria a un objeto BitArray de bitstring
+            bits = bitstring.BitArray(bin=buffer)
+            
+            # Recorre la lista format para deserializar cada campo de la trama binaria
+            for field in format:
+                if field['type'] == 'uint':
+                    values[field['tag']] = bits.unpack('uint:{:d}'.format(field['len']))[0]
+                elif field['type'] == 'int':
+                    values[field['tag']] = bits.unpack('int:{:d}'.format(field['len']))[0]
+                elif field['type'] == 'float':
+                    values[field['tag']] = bits.unpack('floatbe:{:d}'.format(field['len']))[0]
+                elif field['type'] == 'ascii':
+                    length = field['len'] // 7
+                    values[field['tag']] = bits.unpack('bytes:{}'.format(length))[0].decode('ascii', 'ignore')
+                else:
+                    print(f"decode1: No se reconoce el tipo de objeto: {field['type']}")
+                bits=bits[field['len']:]
+        except bitstring.ReadError:
+            print(bitstring.ReadError)
             print("Advertencia! La trama binaria debería ser mayor según el formato ingresado.")
             return None
         else:
-            # Transformo los datos en una lista de objetos
-            result = {}
-            count=0
-            for iObjetoDatos in ObjetoDatos:
-                if (iObjetoDatos.type=='ascii'):
-                    result[iObjetoDatos.tag] = unpacked[count].decode('utf-8').rstrip('\x00')
-                else:
-                    result[iObjetoDatos.tag] = unpacked[count]
-                count+=1
-            return result
+            return values
+        
